@@ -1,6 +1,7 @@
 # Compiled executables
 division_zero_test
 division_zero_with_handler
+division_zero_advanced
 
 # Object files
 *.o

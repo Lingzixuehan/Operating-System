@@ -1,0 +1,9 @@
+set pagination off
+break main
+break sig_divzero
+run
+info registers
+backtrace
+continue
+10
+0
