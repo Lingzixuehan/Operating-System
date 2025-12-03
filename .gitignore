@@ -14,3 +14,19 @@ core.*
 # Other compiled files
 *.out
 *.exe
+
+# LaTeX temporary files
+*.aux
+*.log
+*.toc
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.blg
+*.bbl
+*.idx
+*.ind
+*.ilg
+*.lof
+*.lot

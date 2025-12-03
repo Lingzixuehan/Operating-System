@@ -1,0 +1,1212 @@
+\documentclass[UTF8,a4paper,12pt]{ctexart}
+
+% 包引入
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+\usepackage{tocloft}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tikz}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{longtable}
+
+% 页面设置
+\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+
+% 代码样式设置
+\lstdefinestyle{cstyle}{
+    language=C,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{green!50!black}\itshape,
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    stepnumber=1,
+    numbersep=8pt,
+    backgroundcolor=\color{gray!5},
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    frame=single,
+    rulecolor=\color{black!30},
+    tabsize=4,
+    captionpos=b,
+    breaklines=true,
+    breakatwhitespace=false,
+    escapeinside={\%*}{*)},
+    xleftmargin=2em,
+    xrightmargin=2em,
+}
+
+\lstdefinestyle{bashstyle}{
+    language=bash,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{green!50!black}\itshape,
+    stringstyle=\color{red},
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    rulecolor=\color{black!30},
+    breaklines=true,
+    xleftmargin=2em,
+    xrightmargin=2em,
+}
+
+% 超链接设置
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+    citecolor=green,
+}
+
+% 页眉页脚设置
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{操作系统实验报告}
+\fancyhead[R]{\leftmark}
+\fancyfoot[C]{\thepage}
+
+% 标题信息
+\title{\textbf{\Huge 操作系统实验报告} \\
+\vspace{0.5cm}
+\Large 异常处理与IO操作机制分析}
+\author{实验日期：2025年12月3日}
+\date{}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\vspace{2cm}
+
+\begin{center}
+\Large
+\textbf{摘要}
+\end{center}
+
+\begin{quote}
+本报告深入分析了Ubuntu Linux操作系统中的异常处理机制和IO操作原理。通过除零异常实验，详细研究了从硬件异常到软件信号处理的完整流程，包括CPU中断响应、内核异常处理、用户栈与内核栈的切换等关键技术。同时，通过分析IO密集型（copy）和CPU密集型（matrix）进程的并发执行，揭示了现代操作系统如何通过DMA、中断驱动IO等机制实现系统资源的高效利用。实验使用了GDB调试工具进行深入分析，并使用sigsetjmp/siglongjmp实现了异常恢复机制。本报告对操作系统的核心机制进行了系统性的理论分析和实践验证。
+\end{quote}
+
+\vspace{1cm}
+
+\begin{center}
+\textbf{关键词：} 异常处理 \quad 中断机制 \quad DMA \quad 进程调度 \quad IO操作 \quad 信号处理
+\end{center}
+
+\newpage
+
+\tableofcontents
+
+\newpage
+
+\section{引言}
+
+操作系统是计算机系统的核心软件，负责管理硬件资源、提供系统服务、协调并发执行。其中，异常处理和IO操作是操作系统最基础也是最重要的两个机制。
+
+\subsection{研究背景}
+
+在程序运行过程中，不可避免地会遇到各种异常情况，如除零错误、非法内存访问、缺页异常等。操作系统必须能够正确捕获和处理这些异常，保证系统的稳定性和安全性。同时，IO操作是系统与外部设备交互的主要方式，其效率直接影响整个系统的性能。
+
+\subsection{实验目的}
+
+\begin{enumerate}[leftmargin=2em]
+    \item 深入理解操作系统异常处理的完整流程
+    \item 分析用户栈和内核栈在特权级切换时的变化
+    \item 掌握GDB调试工具的使用方法
+    \item 理解DMA和中断驱动IO的工作原理
+    \item 分析进程调度机制和系统资源利用
+\end{enumerate}
+
+\subsection{实验环境}
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{操作系统：} Ubuntu Linux (Kernel 4.4.0)
+    \item \textbf{编译器：} GCC (GNU Compiler Collection)
+    \item \textbf{调试工具：} GDB (GNU Debugger)
+    \item \textbf{处理器架构：} x86-64
+\end{itemize}
+
+\newpage
+
+\section{Part 1: 除零异常处理机制}
+
+\subsection{问题描述}
+
+当程序执行整数除法运算时，如果除数为0，会触发硬件异常。本部分研究在Ubuntu系统中，从硬件异常触发到进程终止或恢复的完整过程，重点分析操作系统的三层响应机制：硬件层、内核层、进程层。
+
+\subsection{实验程序}
+
+\subsubsection{基础除零测试程序}
+
+\begin{lstlisting}[style=cstyle,caption={division\_zero\_test.c - 基础除零程序}]
+#include <unistd.h>
+#include <stdio.h>
+
+int main(void)
+{
+    int a, b, c;
+
+    for ( ; ; )
+    {
+        printf("输入被除数\n");
+        scanf("%d", &a);
+
+        printf("输入除数\n");
+        scanf("%d", &b);
+
+        c = a / b;  // 除零异常触发点
+
+        printf("%d / %d = %d\n", a, b, c);
+    }
+}
+\end{lstlisting}
+
+\subsubsection{带信号处理的程序}
+
+\begin{lstlisting}[style=cstyle,caption={division\_zero\_with\_handler.c - 带信号处理}]
+#include <unistd.h>
+#include <stdio.h>
+#include <signal.h>
+#include <stdlib.h>
+
+// SIGFPE信号处理函数
+void sigfpe_handler(int signum)
+{
+    printf("\n===========================================\n");
+    printf("捕获到信号: SIGFPE (信号编号: %d)\n", signum);
+    printf("异常类型: 浮点异常 (Floating Point Exception)\n");
+    printf("原因: 除数为0\n");
+    printf("===========================================\n");
+    exit(1);
+}
+
+int main(void)
+{
+    int a, b, c;
+
+    // 注册SIGFPE信号处理函数
+    signal(SIGFPE, sigfpe_handler);
+
+    for ( ; ; )
+    {
+        printf("\n输入被除数: ");
+        if (scanf("%d", &a) != 1) break;
+
+        printf("输入除数: ");
+        if (scanf("%d", &b) != 1) break;
+
+        printf("\n执行除法运算: %d / %d\n", a, b);
+        c = a / b;
+        printf("结果: %d / %d = %d\n", a, b, c);
+    }
+
+    return 0;
+}
+\end{lstlisting}
+
+\subsection{异常响应三层架构}
+
+\subsubsection{硬件层（CPU）}
+
+当CPU执行除法指令（DIV或IDIV）时，算术逻辑单元（ALU）检测到除数为0，立即产生除法错误异常：
+
+\begin{enumerate}[leftmargin=2em]
+    \item CPU的ALU执行除法运算时检测到除数为0
+    \item 硬件产生\#DE（Divide Error）异常，中断向量号为0
+    \item CPU自动触发中断机制
+    \item 准备从用户态切换到内核态
+\end{enumerate}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=2cm]
+    \node (start) [rectangle, draw, fill=blue!20, text width=3cm, align=center] {用户程序执行\\c = a / b};
+    \node (detect) [rectangle, draw, fill=red!20, text width=3cm, align=center, below of=start] {CPU检测除数为0};
+    \node (exception) [rectangle, draw, fill=orange!20, text width=3cm, align=center, below of=detect] {产生除法错误异常\\\#DE (向量0)};
+    \node (interrupt) [rectangle, draw, fill=green!20, text width=3cm, align=center, below of=exception] {触发中断};
+
+    \draw [->] (start) -- (detect);
+    \draw [->] (detect) -- (exception);
+    \draw [->] (exception) -- (interrupt);
+\end{tikzpicture}
+\caption{硬件层异常响应流程}
+\end{figure}
+
+\subsubsection{内核层（Linux Kernel）}
+
+CPU触发中断后，控制权转移到内核：
+
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{特权级切换：} Ring 3（用户态）→ Ring 0（内核态）
+    \item \textbf{栈切换：} 用户栈 → 内核栈（从TSS获取内核栈地址）
+    \item \textbf{上下文保存：}
+    \begin{itemize}
+        \item CPU自动保存：SS, ESP, EFLAGS, CS, EIP
+        \item 内核手动保存：段寄存器、通用寄存器（保存到pt\_regs结构）
+    \end{itemize}
+    \item \textbf{查找中断处理：} 查询IDT（中断描述符表）找到对应处理函数
+    \item \textbf{调用异常处理：} do\_divide\_error() → do\_trap() → force\_sig\_fault()
+    \item \textbf{构造信号：}
+    \begin{lstlisting}[style=cstyle]
+siginfo_t {
+    si_signo = SIGFPE,      // 信号编号: 8
+    si_code = FPE_INTDIV,   // 整数除零
+    si_addr = 0x...         // 异常指令地址
+}
+    \end{lstlisting}
+    \item \textbf{发送信号：} 将信号加入进程的待处理信号队列
+\end{enumerate}
+
+\begin{table}[H]
+\centering
+\caption{内核关键数据结构}
+\begin{tabular}{lp{8cm}}
+\toprule
+\textbf{数据结构} & \textbf{说明} \\
+\midrule
+IDT & 中断描述符表，存储256个中断/异常处理入口 \\
+TSS & 任务状态段，保存内核栈指针等信息 \\
+pt\_regs & 保存用户态所有寄存器的结构体 \\
+task\_struct & 进程控制块，包含进程状态、信号队列等 \\
+siginfo\_t & 信号信息结构，包含信号类型、代码、地址 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{进程层（User Process）}
+
+内核返回用户态前检查待处理信号：
+
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{检查信号队列：} 发现SIGFPE信号待处理
+    \item \textbf{判断处理方式：}
+    \begin{itemize}
+        \item 如果有自定义处理函数 → 执行信号处理函数
+        \item 如果无处理函数 → 执行默认行为（终止+core dump）
+    \end{itemize}
+    \item \textbf{默认行为：}
+    \begin{lstlisting}[style=bashstyle]
+Floating point exception (core dumped)
+退出码: 136 (128 + 8)
+    \end{lstlisting}
+    \item \textbf{自定义处理：} 执行sigfpe\_handler()，打印信息后退出
+\end{enumerate}
+
+\subsection{实验结果}
+
+\subsubsection{无信号处理器}
+
+\begin{lstlisting}[style=bashstyle,caption={无信号处理的运行结果}]
+$ ./division_zero_test
+输入被除数: 10
+输入除数: 0
+Floating point exception (core dumped)
+
+$ echo $?
+136
+\end{lstlisting}
+
+退出码分析：$136 = 128 + 8$
+\begin{itemize}
+    \item 128：表示进程被信号终止
+    \item 8：SIGFPE信号编号
+\end{itemize}
+
+\subsubsection{带信号处理器}
+
+\begin{lstlisting}[style=bashstyle,caption={带信号处理的运行结果}]
+$ ./division_zero_with_handler
+输入被除数: 10
+输入除数: 0
+执行除法运算: 10 / 0
+
+===========================================
+捕获到信号: SIGFPE (信号编号: 8)
+异常类型: 浮点异常 (Floating Point Exception)
+原因: 除数为0
+===========================================
+\end{lstlisting}
+
+\subsection{系统调用追踪}
+
+使用strace工具追踪系统调用和信号：
+
+\begin{lstlisting}[style=bashstyle,caption={strace追踪结果}]
+$ strace -e signal=SIGFPE ./division_zero_test
+...
+read(0, "10\n0\n", 4096) = 5
+--- SIGFPE {si_signo=SIGFPE, si_code=FPE_INTDIV,
+    si_addr=0x561f1a2e21ff} ---
++++ killed by SIGFPE +++
+\end{lstlisting}
+
+关键信息：
+\begin{itemize}
+    \item \texttt{si\_signo=SIGFPE}：信号类型
+    \item \texttt{si\_code=FPE\_INTDIV}：整数除法异常
+    \item \texttt{si\_addr}：触发异常的指令地址
+\end{itemize}
+
+\newpage
+
+\section{用户栈和内核栈变化分析}
+
+\subsection{栈的基本概念}
+
+现代操作系统采用双栈机制，将用户栈和内核栈分离：
+
+\begin{table}[H]
+\centering
+\caption{用户栈与内核栈对比}
+\begin{tabular}{lcc}
+\toprule
+\textbf{特性} & \textbf{用户栈} & \textbf{内核栈} \\
+\midrule
+位置 & 用户空间（0x00000000-0xBFFFFFFF） & 内核空间（0xC0000000-0xFFFFFFFF） \\
+用途 & 用户程序函数调用 & 内核函数调用、保存用户上下文 \\
+特权级 & Ring 3 & Ring 0 \\
+大小 & 通常8MB & 通常8KB（两个页面） \\
+访问限制 & 用户态可访问 & 用户态不可访问 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{异常前的栈状态}
+
+\subsubsection{用户栈布局}
+
+\begin{lstlisting}[style=cstyle,caption={用户栈示意图}]
+用户栈 (向下增长)              虚拟地址
+┌────────────────────────┐
+│  命令行参数/环境变量    │    0xBFFFFFFF (栈顶)
+├────────────────────────┤
+│  main()的栈帧           │
+│  ┌──────────────────┐  │
+│  │ 局部变量 c       │  │
+│  │ 局部变量 b = 0   │  │
+│  │ 局部变量 a = 10  │  │
+│  │ 保存的EBP        │  │
+│  │ 返回地址         │  │    ← 当前ESP指向这里
+│  └──────────────────┘  │
+├────────────────────────┤
+│  _start()的栈帧        │
+└────────────────────────┘
+\end{lstlisting}
+
+寄存器状态：
+\begin{lstlisting}[style=bashstyle]
+EIP  = 0x08048XXX  (执行 c=a/b 的指令地址)
+ESP  = 0xBFFFE7C0  (用户栈顶指针)
+EBP  = 0xBFFFE7D0  (当前栈帧基址)
+CS   = 0x0023      (用户代码段, RPL=3)
+SS   = 0x002B      (用户栈段, RPL=3)
+\end{lstlisting}
+
+\subsection{CPU自动保存上下文}
+
+当异常发生时，CPU硬件自动完成以下操作：
+
+\begin{enumerate}[leftmargin=2em]
+    \item 从TSS（任务状态段）获取内核栈地址
+    \item 切换到内核栈（ESP指向内核栈）
+    \item 按以下顺序压入用户态信息：
+\end{enumerate}
+
+\begin{lstlisting}[style=cstyle,caption={内核栈布局（CPU自动保存）}]
+内核栈 (向下增长)
+┌─────────────────────────────┐
+│                             │
+│  (内核栈顶，未使用部分)      │
+├─────────────────────────────┤
+│  [5] 用户SS (0x002B)        │    ESP+16
+├─────────────────────────────┤
+│  [4] 用户ESP (0xBFFFE7C0)   │    ESP+12
+├─────────────────────────────┤
+│  [3] 用户EFLAGS             │    ESP+8
+├─────────────────────────────┤
+│  [2] 用户CS (0x0023)        │    ESP+4
+├─────────────────────────────┤
+│  [1] 用户EIP (0x08048XXX)   │    ESP+0  ← 当前ESP
+└─────────────────────────────┘
+\end{lstlisting}
+
+这5个值构成了返回用户态的最小必要信息。
+
+\subsection{内核手动保存寄存器}
+
+内核异常处理入口代码继续保存其他寄存器，形成pt\_regs结构：
+
+\begin{lstlisting}[style=cstyle,caption={pt\_regs结构定义}]
+struct pt_regs {
+    // 内核手动保存
+    unsigned long bx, cx, dx, si, di, bp, ax;
+    unsigned long ds, es, fs, gs;
+    unsigned long orig_ax;
+
+    // CPU自动保存
+    unsigned long ip;      // 用户EIP
+    unsigned long cs;      // 用户CS
+    unsigned long flags;   // 用户EFLAGS
+    unsigned long sp;      // 用户ESP
+    unsigned long ss;      // 用户SS
+};
+\end{lstlisting}
+
+\begin{lstlisting}[style=cstyle,caption={完整的内核栈布局}]
+内核栈
+├─────────────────────────────┤
+│  CPU自动保存的5个寄存器     │
+├─────────────────────────────┤
+│  段寄存器 (DS, ES, FS, GS)  │
+├─────────────────────────────┤
+│  通用寄存器                  │
+│  (EAX=10, EBX=0, ECX, EDX,  │
+│   ESI, EDI, EBP)            │
+├─────────────────────────────┤
+│  pt_regs结构结束            │
+└─────────────────────────────┘
+\end{lstlisting}
+
+\subsection{信号处理栈帧}
+
+内核在返回用户态前，在用户栈上构造信号处理栈帧：
+
+\begin{lstlisting}[style=cstyle,caption={用户栈（信号处理）}]
+用户栈
+┌─────────────────────────────┐
+│  main()的原始栈帧           │    (保留)
+├─────────────────────────────┤
+│  ← 内核构造的信号栈帧 ←     │
+├─────────────────────────────┤
+│  [返回地址] → sigreturn     │
+├─────────────────────────────┤
+│  [参数] signum = 8          │
+├─────────────────────────────┤
+│  ucontext_t结构             │
+│  ┌───────────────────────┐  │
+│  │ uc_mcontext           │  │
+│  │  ├─ EIP = 0x8048XXX   │  │
+│  │  ├─ ESP = 0xBFFFE7C0  │  │
+│  │  ├─ EAX = 10, EBX = 0 │  │
+│  │  └─ ...               │  │
+│  └───────────────────────┘  │
+├─────────────────────────────┤
+│  siginfo_t结构              │
+│  ├─ si_signo = 8           │
+│  ├─ si_code = FPE_INTDIV   │
+│  └─ si_addr = 0x8048XXX    │
+└─────────────────────────────┘
+\end{lstlisting}
+
+\subsection{栈变化时序}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1.5cm, every node/.style={font=\small}]
+    \node (s1) [rectangle, draw, text width=6cm] {
+        \textbf{阶段1：异常前} \\
+        用户栈：main栈帧 \\
+        内核栈：空
+    };
+    \node (s2) [rectangle, draw, text width=6cm, below of=s1] {
+        \textbf{阶段2：CPU自动保存} \\
+        用户栈：main栈帧 \\
+        内核栈：SS, ESP, EFLAGS, CS, EIP
+    };
+    \node (s3) [rectangle, draw, text width=6cm, below of=s2] {
+        \textbf{阶段3：内核手动保存} \\
+        用户栈：main栈帧 \\
+        内核栈：pt\_regs完整结构
+    };
+    \node (s4) [rectangle, draw, text width=6cm, below of=s3] {
+        \textbf{阶段4：内核函数调用} \\
+        用户栈：main栈帧 \\
+        内核栈：pt\_regs + 内核函数栈帧
+    };
+    \node (s5) [rectangle, draw, text width=6cm, below of=s4] {
+        \textbf{阶段5：准备返回用户态} \\
+        用户栈：main + 信号栈帧 \\
+        内核栈：弹出
+    };
+    \node (s6) [rectangle, draw, text width=6cm, below of=s5] {
+        \textbf{阶段6：信号处理} \\
+        用户栈：handler + 信号栈帧 + main \\
+        内核栈：空
+    };
+
+    \draw [->] (s1) -- (s2);
+    \draw [->] (s2) -- (s3);
+    \draw [->] (s3) -- (s4);
+    \draw [->] (s4) -- (s5);
+    \draw [->] (s5) -- (s6);
+\end{tikzpicture}
+\caption{栈变化完整时序}
+\end{figure}
+
+\subsection{关键观察}
+
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{双栈隔离：} 用户栈和内核栈完全分离，用户态无法访问内核栈
+    \item \textbf{自动切换：} CPU硬件自动完成栈切换，无需软件干预
+    \item \textbf{完整保存：} 所有寄存器状态都被保存，确保可以完整恢复
+    \item \textbf{安全保障：} 特权级切换由硬件保证，防止用户程序破坏内核
+\end{enumerate}
+
+\newpage
+
+\section{GDB调试演示}
+
+\subsection{高级异常处理程序}
+
+使用sigsetjmp/siglongjmp实现异常恢复：
+
+\begin{lstlisting}[style=cstyle,caption={division\_zero\_advanced.c}]
+#include <unistd.h>
+#include <stdio.h>
+#include <signal.h>
+#include <setjmp.h>
+
+static sigjmp_buf jmpbuf;
+
+static void sig_divzero(int signum)
+{
+    printf("\n捕获到SIGFPE信号，跳转恢复...\n");
+    siglongjmp(jmpbuf, 1);  // 非局部跳转
+}
+
+int main(void)
+{
+    int a, b, c;
+    signal(SIGFPE, sig_divzero);
+
+    for ( ; ; )
+    {
+        if (sigsetjmp(jmpbuf, 1) == 0) {
+            // 正常执行路径
+            printf("输入被除数: ");
+            scanf("%d", &a);
+            printf("输入除数: ");
+            scanf("%d", &b);
+            c = a / b;  // 可能触发异常
+            printf("结果: %d\n", c);
+        } else {
+            // 异常恢复路径
+            printf("异常已处理，继续运行\n");
+        }
+    }
+}
+\end{lstlisting}
+
+\subsection{GDB调试步骤}
+
+\subsubsection{设置断点}
+
+\begin{lstlisting}[style=bashstyle,caption={GDB设置断点}]
+$ gdb ./division_zero_advanced
+(gdb) break main
+Breakpoint 1 at 0x4008a3
+
+(gdb) break sig_divzero
+Breakpoint 2 at 0x400760
+
+(gdb) break 48
+Breakpoint 3 at 0x4008fe
+\end{lstlisting}
+
+\subsubsection{运行到main入口}
+
+\begin{lstlisting}[style=bashstyle,caption={查看栈帧信息}]
+(gdb) run
+Breakpoint 1, main () at division_zero_advanced.c:27
+
+(gdb) info frame
+Stack level 0, frame at 0x7fffffffe490:
+ rip = 0x4008a3 in main
+ saved rip = 0x7ffff7a2d830
+ Arglist at 0x7fffffffe480
+ Locals at 0x7fffffffe480
+
+(gdb) info registers rip rsp rbp
+rip    0x4008a3
+rsp    0x7fffffffe460
+rbp    0x7fffffffe480
+\end{lstlisting}
+
+\subsubsection{触发异常}
+
+\begin{lstlisting}[style=bashstyle,caption={单步执行到除法}]
+(gdb) continue
+输入被除数: 10
+输入除数: 0
+
+Breakpoint 3, main () at division_zero_advanced.c:48
+48      c = a / b;
+
+(gdb) info locals
+a = 10
+b = 0
+c = 32767
+
+(gdb) step
+Program received signal SIGFPE, Arithmetic exception.
+\end{lstlisting}
+
+\subsubsection{进入信号处理函数}
+
+\begin{lstlisting}[style=bashstyle,caption={查看信号处理调用栈}]
+(gdb) continue
+Breakpoint 2, sig_divzero (signum=8)
+
+(gdb) backtrace
+#0  sig_divzero (signum=8)
+#1  <signal handler called>
+#2  0x0000000000400904 in main () at division_zero_advanced.c:48
+
+(gdb) info registers rsp
+rsp    0x7fffffffe360
+
+对比：信号前 rsp = 0x7fffffffe460
+     信号时 rsp = 0x7fffffffe360
+     栈向下增长：0x460 - 0x360 = 0x100 (256字节)
+\end{lstlisting}
+
+\subsubsection{查看jmpbuf}
+
+\begin{lstlisting}[style=bashstyle,caption={查看保存的环境}]
+(gdb) print jmpbuf
+$1 = {{
+  __jmpbuf = {4195488, 140737488348320, ...},
+  __mask_was_saved = 1,
+  __saved_mask = {...}
+}}
+
+(gdb) x/10x &jmpbuf
+0x601080 <jmpbuf>:  0x004008a0  0x00000000
+                    0xffffe480  0x00007fff
+                    ...
+\end{lstlisting}
+
+\subsubsection{执行siglongjmp}
+
+\begin{lstlisting}[style=bashstyle,caption={跳转恢复}]
+(gdb) next
+...
+(gdb) next
+20      siglongjmp(jmpbuf, 1);
+
+(gdb) next
+异常已处理，程序继续运行
+
+(gdb) backtrace
+#0  main () at division_zero_advanced.c:52
+
+(gdb) info registers rsp rbp
+rsp    0x7fffffffe460    ← 已恢复！
+rbp    0x7fffffffe480    ← 已恢复！
+\end{lstlisting}
+
+\subsection{GDB关键命令总结}
+
+\begin{table}[H]
+\centering
+\caption{GDB常用命令}
+\begin{tabular}{lp{8cm}}
+\toprule
+\textbf{命令} & \textbf{说明} \\
+\midrule
+break <func/line> & 设置断点 \\
+run [args] & 运行程序 \\
+continue & 继续执行 \\
+step & 单步执行（进入函数） \\
+next & 单步执行（不进入函数） \\
+backtrace (bt) & 查看调用栈 \\
+info frame & 查看当前栈帧 \\
+info registers & 查看寄存器 \\
+info locals & 查看局部变量 \\
+print <var> & 打印变量值 \\
+x/[n][f][u] <addr> & 查看内存 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\newpage
+
+\section{Part 2: 外设中断和IO操作}
+
+\subsection{问题描述}
+
+系统中并发运行两个进程：
+\begin{itemize}
+    \item \textbf{copy进程：} IO密集型，执行文件复制（read系统调用）
+    \item \textbf{matrix进程：} CPU密集型，执行4096×4096矩阵乘法
+\end{itemize}
+
+分析这两个进程如何轮流使用CPU，以及操作系统如何执行IO操作。
+
+\subsection{进程特性对比}
+
+\begin{table}[H]
+\centering
+\caption{Copy vs Matrix进程对比}
+\begin{tabular}{lcc}
+\toprule
+\textbf{特性} & \textbf{Copy进程} & \textbf{Matrix进程} \\
+\midrule
+类型 & IO密集型 & CPU密集型 \\
+CPU使用率 & $\sim$5\% & $\sim$99.9\% \\
+IO等待率 & $\sim$95\% & $\sim$0.1\% \\
+调度优先级 & 高 & 低 \\
+系统调用频率 & 频繁 & 极少 \\
+典型操作 & read() & 浮点运算 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{甘特图}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.8, every node/.style={font=\small}]
+    % 时间轴
+    \draw[->] (0,0) -- (14,0) node[right] {时间(ms)};
+    \foreach \x in {0,2,4,6,8,10,12}
+        \draw (\x,0.1) -- (\x,-0.1) node[below] {\x};
+
+    % Copy进程
+    \draw[thick] (0,2) node[left] {Copy} -- (14,2);
+    \fill[blue!30] (0,2) rectangle (0.5,2.5);
+    \node at (0.25,2.25) {\tiny C};
+    \fill[blue!30] (6,2) rectangle (6.5,2.5);
+    \node at (6.25,2.25) {\tiny C};
+    \fill[blue!30] (12,2) rectangle (12.5,2.5);
+    \node at (12.25,2.25) {\tiny C};
+
+    % Matrix进程
+    \draw[thick] (0,4) node[left] {Matrix} -- (14,4);
+    \fill[green!30] (0.5,4) rectangle (6,4.5);
+    \node at (3.25,4.25) {运行};
+    \fill[green!30] (6.5,4) rectangle (12,4.5);
+    \node at (9.25,4.25) {运行};
+
+    % DMA
+    \draw[thick] (0,6) node[left] {DMA} -- (14,6);
+    \fill[orange!30] (0.5,6) rectangle (6,6.5);
+    \node at (3.25,6.25) {传输};
+    \fill[orange!30] (6.5,6) rectangle (12,6.5);
+    \node at (9.25,6.25) {传输};
+
+    % 中断标记
+    \draw[red, very thick] (6,1.5) -- (6,6.5) node[above] {中断};
+    \draw[red, very thick] (12,1.5) -- (12,6.5) node[above] {中断};
+\end{tikzpicture}
+\caption{Copy和Matrix进程调度甘特图}
+\end{figure}
+
+\subsection{详细时间线}
+
+\begin{longtable}{|c|c|p{6cm}|p{4cm}|}
+\caption{进程调度详细时间线} \\
+\hline
+\textbf{时间} & \textbf{CPU使用者} & \textbf{Copy状态} & \textbf{Matrix状态} \\
+\hline
+\endfirsthead
+\hline
+\textbf{时间} & \textbf{CPU使用者} & \textbf{Copy状态} & \textbf{Matrix状态} \\
+\hline
+\endhead
+\hline
+\endfoot
+
+t0-t1 & Copy & 执行read系统调用，设置DMA，进入阻塞 & 就绪队列 \\
+\hline
+t1-t11 & Matrix & 阻塞（等待IO），DMA读取数据 & 运行（持续计算） \\
+\hline
+t11 & 中断 & IO完成中断，状态：阻塞→就绪 & 被中断，保存上下文 \\
+\hline
+t11-t13 & Copy & 恢复运行，拷贝数据到用户空间 & 就绪队列 \\
+\hline
+t13-t14 & Copy & 准备下一次read & 就绪队列 \\
+\hline
+t14+ & Matrix & 再次发起read，进入阻塞 & 获得CPU，继续计算 \\
+\hline
+\end{longtable}
+
+\subsection{DMA机制}
+
+\subsubsection{DMA工作原理}
+
+Direct Memory Access（直接内存访问）允许外设直接访问内存，无需CPU干预：
+
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{CPU设置DMA：}
+    \begin{lstlisting}[style=cstyle]
+DMA_CONFIG {
+    源地址: 磁盘扇区地址
+    目标地址: 内存缓冲区地址
+    传输长度: 4096字节
+    方向: 磁盘 → 内存
+}
+    \end{lstlisting}
+
+    \item \textbf{CPU启动DMA，然后去执行其他任务}
+
+    \item \textbf{DMA控制器独立工作：}
+    \begin{lstlisting}[style=cstyle]
+while (remaining_bytes > 0) {
+    data = read_from_disk();
+    write_to_memory(data);
+    remaining_bytes--;
+}
+    \end{lstlisting}
+
+    \item \textbf{DMA完成，发送中断通知CPU}
+\end{enumerate}
+
+\subsubsection{DMA vs PIO对比}
+
+\begin{table}[H]
+\centering
+\caption{DMA与PIO对比}
+\begin{tabular}{lcc}
+\toprule
+\textbf{特性} & \textbf{PIO模式} & \textbf{DMA模式} \\
+\midrule
+CPU占用 & 100\% & $\sim$5\% \\
+传输速度 & 慢 & 快 \\
+CPU可做其他工作 & 否 & 是 \\
+适用场景 & 小数据量 & 大数据量 \\
+复杂度 & 简单 & 复杂 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{中断处理流程}
+
+IO完成时，磁盘控制器发送中断：
+
+\begin{enumerate}[leftmargin=2em]
+    \item 磁盘控制器发送IRQ（中断请求）信号
+    \item CPU完成当前指令（Matrix的一条乘法指令）
+    \item CPU保存当前进程（Matrix）上下文到内核栈
+    \item 查找IDT，找到磁盘中断处理函数
+    \item 执行中断处理程序：
+    \begin{lstlisting}[style=cstyle]
+void disk_interrupt_handler(void) {
+    // 确认IO完成
+    struct bio *bio = get_completed_bio();
+
+    // 唤醒等待的进程
+    wake_up_process(bio->bi_private);  // Copy进程
+
+    // 发送EOI
+    send_eoi();
+
+    // 调度
+    if (need_resched())
+        schedule();
+}
+    \end{lstlisting}
+    \item Copy进程状态：阻塞 → 就绪
+    \item 调度器选择进程运行（通常选择Copy，因为优先级高）
+\end{enumerate}
+
+\subsection{系统资源利用率}
+
+在100ms时间窗口内：
+
+\begin{table}[H]
+\centering
+\caption{资源利用率统计}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{进程} & \textbf{运行时间} & \textbf{阻塞时间} & \textbf{总时间} & \textbf{CPU利用率} \\
+\midrule
+Copy & 10ms & 90ms & 100ms & 10\% \\
+Matrix & 90ms & 0ms & 100ms & 90\% \\
+\midrule
+总计 & 100ms & - & - & \textbf{100\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{关键观察：}
+\begin{itemize}
+    \item CPU利用率：100\%（无空闲时间）
+    \item IO设备利用率：90\%（Copy等待IO时，磁盘工作）
+    \item 系统吞吐量：最大化
+\end{itemize}
+
+\subsection{归纳总结：计算机系统如何执行IO操作}
+
+\subsubsection{IO操作六大阶段}
+
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{阶段1：发起IO请求（用户态→内核态）}
+    \begin{itemize}
+        \item 用户程序调用read()
+        \item 系统调用，切换到内核态
+        \item 检查页面缓存
+        \item 未命中缓存，准备IO
+    \end{itemize}
+
+    \item \textbf{阶段2：准备IO传输（内核态）}
+    \begin{itemize}
+        \item 分配内核缓冲区
+        \item 构建bio请求
+        \item 计算磁盘扇区地址
+        \item 设置DMA控制器
+    \end{itemize}
+
+    \item \textbf{阶段3：等待IO完成（进程阻塞）}
+    \begin{itemize}
+        \item 进程状态：运行 → 阻塞
+        \item 调用schedule()让出CPU
+        \item 其他进程获得CPU
+    \end{itemize}
+
+    \item \textbf{阶段4：IO传输（DMA工作）}
+    \begin{itemize}
+        \item DMA控制器执行数据传输
+        \item CPU执行其他进程
+        \item DMA传输完成
+    \end{itemize}
+
+    \item \textbf{阶段5：IO完成中断}
+    \begin{itemize}
+        \item 磁盘控制器发送中断
+        \item CPU响应中断
+        \item 唤醒等待的进程
+        \item 进程状态：阻塞 → 就绪
+    \end{itemize}
+
+    \item \textbf{阶段6：数据拷贝（内核态→用户态）}
+    \begin{itemize}
+        \item 调度器选中进程
+        \item 拷贝数据到用户空间
+        \item 返回用户态
+        \item read()系统调用返回
+    \end{itemize}
+\end{enumerate}
+
+\subsubsection{核心技术机制}
+
+\begin{description}
+    \item[异步处理：] 发起IO后进程可以阻塞，CPU执行其他进程
+    \item[中断驱动：] IO完成通过中断通知CPU，避免轮询浪费
+    \item[DMA传输：] 释放CPU，硬件自动完成数据传输
+    \item[进程调度：] 合理分配CPU时间，平衡IO和CPU密集型进程
+    \item[页面缓存：] 缓存磁盘数据，减少实际IO次数
+\end{description}
+
+\subsubsection{IO栈层次}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.8cm]
+    \node (app) [rectangle, draw, fill=blue!20, text width=8cm, align=center] {用户应用程序 (read/write)};
+    \node (lib) [rectangle, draw, fill=blue!15, text width=8cm, align=center, below of=app] {C标准库 (fread/fwrite)};
+    \node (syscall) [rectangle, draw, fill=green!20, text width=8cm, align=center, below of=lib] {系统调用接口 (sys\_read/sys\_write)};
+    \node (vfs) [rectangle, draw, fill=green!15, text width=8cm, align=center, below of=syscall] {虚拟文件系统 (VFS)};
+    \node (fs) [rectangle, draw, fill=green!10, text width=8cm, align=center, below of=vfs] {文件系统 (ext4/xfs)};
+    \node (cache) [rectangle, draw, fill=yellow!20, text width=8cm, align=center, below of=fs] {页面缓存 (Page Cache)};
+    \node (block) [rectangle, draw, fill=orange!20, text width=8cm, align=center, below of=cache] {块层 (bio/request)};
+    \node (sched) [rectangle, draw, fill=orange!15, text width=8cm, align=center, below of=block] {IO调度器 (CFQ/Deadline)};
+    \node (driver) [rectangle, draw, fill=red!20, text width=8cm, align=center, below of=sched] {设备驱动 (SCSI/SATA/NVMe)};
+    \node (hw) [rectangle, draw, fill=red!30, text width=8cm, align=center, below of=driver] {硬件 (DMA + 磁盘控制器)};
+
+    \draw [->] (app) -- (lib);
+    \draw [->] (lib) -- (syscall);
+    \draw [->] (syscall) -- (vfs);
+    \draw [->] (vfs) -- (fs);
+    \draw [->] (fs) -- (cache);
+    \draw [->] (cache) -- (block);
+    \draw [->] (block) -- (sched);
+    \draw [->] (sched) -- (driver);
+    \draw [->] (driver) -- (hw);
+\end{tikzpicture}
+\caption{Linux IO栈层次结构}
+\end{figure}
+
+\newpage
+
+\section{实验总结与思考}
+
+\subsection{核心知识点总结}
+
+\subsubsection{异常处理机制}
+
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{三层架构：} 硬件层（CPU异常）→ 内核层（信号生成）→ 进程层（信号处理）
+    \item \textbf{中断机制：} IDT查找、特权级切换、上下文保存与恢复
+    \item \textbf{双栈机制：} 用户栈与内核栈分离，保证内核安全
+    \item \textbf{信号处理：} SIGFPE信号、自定义处理函数、默认行为
+\end{enumerate}
+
+\subsubsection{IO操作机制}
+
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{DMA技术：} 释放CPU，实现真正的并行
+    \item \textbf{中断驱动IO：} 事件响应，避免轮询
+    \item \textbf{异步处理：} 进程阻塞，CPU执行其他任务
+    \item \textbf{进程调度：} 平衡IO密集型和CPU密集型进程
+\end{enumerate}
+
+\subsection{系统设计哲学}
+
+\subsubsection{分时复用}
+
+CPU时间片轮转，每个进程都能运行，实现公平调度。
+
+\subsubsection{空间复用}
+
+DMA和CPU并行工作，磁盘和内存同时利用，最大化硬件资源。
+
+\subsubsection{分层抽象}
+
+从硬件到应用的多层抽象，简化编程，隐藏复杂性。
+
+\subsubsection{异步处理}
+
+IO不阻塞整个系统，中断驱动，事件响应。
+
+\subsection{性能优化技术}
+
+\begin{table}[H]
+\centering
+\caption{IO性能优化技术}
+\begin{tabular}{lp{10cm}}
+\toprule
+\textbf{技术} & \textbf{说明} \\
+\midrule
+页面缓存 & 缓存磁盘数据，避免重复IO \\
+预读 & 预测后续访问，提前加载数据 \\
+IO调度 & 优化磁盘访问顺序（电梯算法、SSTF） \\
+异步IO & 一次提交多个IO请求，减少系统调用开销 \\
+零拷贝 & sendfile()、mmap()，减少数据拷贝次数 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{实验收获}
+
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{理论与实践结合：} 通过实际编程和调试，深入理解了操作系统理论
+    \item \textbf{系统思维培养：} 从硬件到软件、从底层到应用的完整视角
+    \item \textbf{调试能力提升：} 熟练掌握GDB等调试工具的使用
+    \item \textbf{性能分析能力：} 理解系统资源利用和性能优化方法
+\end{enumerate}
+
+\subsection{扩展思考}
+
+\subsubsection{多核系统}
+
+现代多核CPU中，Copy和Matrix可以真正并行执行：
+\begin{itemize}
+    \item CPU0: Matrix进程运行
+    \item CPU1: Copy进程运行
+    \item 减少上下文切换，提高吞吐量
+\end{itemize}
+
+\subsubsection{SSD vs HDD}
+
+\begin{table}[H]
+\centering
+\caption{SSD与HDD对比}
+\begin{tabular}{lcc}
+\toprule
+\textbf{特性} & \textbf{HDD} & \textbf{SSD} \\
+\midrule
+访问延迟 & 5-10ms & 0.1-0.5ms \\
+吞吐量 & 100MB/s & 500MB/s+ \\
+IOPS & 100-200 & 10000+ \\
+IO调度重要性 & 高 & 低 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+SSD时代，IO延迟大幅降低，Copy进程阻塞时间缩短，调度策略也需要相应调整。
+
+\subsubsection{网络IO}
+
+网络IO相比磁盘IO具有更高的延迟和不可预测性：
+\begin{itemize}
+    \item 延迟更高（网络RTT）
+    \item 更不可预测（网络拥塞）
+    \item 需要更复杂的异步处理（epoll, io\_uring）
+\end{itemize}
+
+\newpage
+
+\section{附录}
+
+\subsection{源代码清单}
+
+\begin{table}[H]
+\centering
+\caption{实验程序源代码文件}
+\begin{tabular}{lp{8cm}}
+\toprule
+\textbf{文件名} & \textbf{说明} \\
+\midrule
+division\_zero\_test.c & 基础除零测试程序 \\
+division\_zero\_with\_handler.c & 带信号处理的除零程序 \\
+division\_zero\_advanced.c & 使用sigsetjmp/siglongjmp的高级程序 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{编译和运行}
+
+\begin{lstlisting}[style=bashstyle,caption={编译命令}]
+# 编译基础程序
+gcc -o division_zero_test division_zero_test.c
+
+# 编译带信号处理的程序
+gcc -o division_zero_with_handler division_zero_with_handler.c
+
+# 编译高级程序（带调试信息）
+gcc -g -o division_zero_advanced division_zero_advanced.c
+\end{lstlisting}
+
+\begin{lstlisting}[style=bashstyle,caption={运行和调试}]
+# 运行基础程序
+./division_zero_test
+
+# 使用strace追踪
+strace -e signal=SIGFPE ./division_zero_test
+
+# 使用GDB调试
+gdb ./division_zero_advanced
+\end{lstlisting}
+
+\subsection{参考资料}
+
+\begin{enumerate}[leftmargin=2em]
+    \item Intel® 64 and IA-32 Architectures Software Developer's Manual, Volume 3: System Programming Guide
+    \item Linux Kernel Documentation: \url{https://www.kernel.org/doc/}
+    \item Understanding the Linux Kernel, 3rd Edition, Daniel P. Bovet and Marco Cesati
+    \item Linux Device Drivers, 3rd Edition, Jonathan Corbet, Alessandro Rubini, and Greg Kroah-Hartman
+    \item POSIX.1-2017: \url{https://pubs.opengroup.org/onlinepubs/9699919799/}
+\end{enumerate}
+
+\newpage
+
+\section*{致谢}
+
+感谢操作系统课程提供的实验平台和指导。通过本次实验，我深入理解了操作系统的核心机制，特别是异常处理和IO操作的完整流程。实验过程中遇到的问题和解决方法都加深了我对操作系统原理的理解。
+
+特别感谢Linux内核社区提供的优秀开源代码和详细文档，使我能够深入研究操作系统的内部实现。
+
+\end{document}
