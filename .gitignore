@@ -1,0 +1,15 @@
+# Compiled executables
+division_zero_test
+division_zero_with_handler
+
+# Object files
+*.o
+*.obj
+
+# Core dumps
+core
+core.*
+
+# Other compiled files
+*.out
+*.exe
